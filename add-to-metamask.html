@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Add NBGN to MetaMask</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 50px; text-align: center; }
+        button { 
+            background: #f6851b; 
+            color: white; 
+            padding: 15px 30px; 
+            font-size: 18px; 
+            border: none; 
+            border-radius: 10px; 
+            cursor: pointer; 
+        }
+        button:hover { background: #e2761b; }
+        .info { margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <h1>Add NBGN to MetaMask</h1>
+    
+    <div class="info">
+        <p><strong>Token:</strong> New Bulgarian Lev (NBGN)</p>
+        <p><strong>Contract:</strong> 0x731733Ee9c0C1b9850d39B56226548A61E4b04B4</p>
+        <p><strong>Decimals:</strong> 18</p>
+    </div>
+    
+    <button onclick="addToken()">🦊 Add NBGN to MetaMask</button>
+    
+    <script>
+        async function addToken() {
+            try {
+                const wasAdded = await ethereum.request({
+                    method: 'wallet_watchAsset',
+                    params: {
+                        type: 'ERC20',
+                        options: {
+                            address: '0x731733Ee9c0C1b9850d39B56226548A61E4b04B4',
+                            symbol: 'NBGN',
+                            decimals: 18,
+                            image: 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c/logo.png'
+                        },
+                    },
+                });
+
+                if (wasAdded) {
+                    alert('NBGN has been added to MetaMask!');
+                } else {
+                    alert('NBGN was not added.');
+                }
+            } catch (error) {
+                console.error(error);
+                alert('Error: Make sure MetaMask is installed and connected.');
+            }
+        }
+    </script>
+</body>
+</html>
