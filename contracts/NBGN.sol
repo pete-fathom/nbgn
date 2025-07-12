@@ -13,7 +13,7 @@ import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 /**
  * @title NBGN - New Bulgarian Lev Stablecoin
- * @dev Euro-pegged stablecoin backed by EURC with fixed conversion rate
+ * @dev Euro-pegged stablecoin backed by EURe with fixed conversion rate
  * @notice 1 EUR = 1.95583 NBGN (Bulgarian Lev official rate)
  */
 contract NBGN is 
@@ -33,18 +33,18 @@ contract NBGN is
     // Constants
     uint256 private constant CONVERSION_RATE = 195583; // 1 EUR = 1.95583 NBGN (scaled by 100000)
     uint256 private constant RATE_PRECISION = 100000;
-    uint256 private constant DECIMAL_DIFFERENCE = 10**12; // 18 - 6 = 12 decimal places difference
+    uint256 private constant DECIMAL_DIFFERENCE = 1; // 18 - 18 = 0 decimal places difference (both tokens use 18 decimals)
     
-    // EURC token address on Ethereum mainnet
-    address private constant EURC_ADDRESS = 0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c;
+    // EURe token address on Arbitrum One
+    address private constant EURE_ADDRESS = 0x0c06cCF38114ddfc35e07427B9424adcca9F44F8;
     
     // State variables
-    IERC20Metadata public eurcToken;
+    IERC20Metadata public eureToken;
     uint256 public totalCollateral;
     
     // Events
-    event Mint(address indexed user, uint256 eurcAmount, uint256 nbgnAmount);
-    event Redeem(address indexed user, uint256 nbgnAmount, uint256 eurcAmount);
+    event Mint(address indexed user, uint256 eureAmount, uint256 nbgnAmount);
+    event Redeem(address indexed user, uint256 nbgnAmount, uint256 eureAmount);
     event CollateralDeposited(uint256 amount);
     event CollateralWithdrawn(uint256 amount);
     event EmergencyWithdraw(address indexed token, uint256 amount);
@@ -71,12 +71,12 @@ contract NBGN is
         __ReentrancyGuard_init();
         __Pausable_init();
         
-        eurcToken = IERC20Metadata(EURC_ADDRESS);
+        eureToken = IERC20Metadata(EURE_ADDRESS);
         
-        // Verify EURC contract exists and has correct decimals (only on non-test networks)
-        if (block.chainid == 1) { // Only check on mainnet
-            try eurcToken.decimals() returns (uint8 decimals) {
-                if (decimals != 6) revert InvalidCollateralToken();
+        // Verify EURe contract exists and has correct decimals (only on non-test networks)
+        if (block.chainid == 42161) { // Only check on Arbitrum One
+            try eureToken.decimals() returns (uint8 decimals) {
+                if (decimals != 18) revert InvalidCollateralToken(); // EURe uses 18 decimals
             } catch {
                 revert InvalidCollateralToken();
             }
@@ -84,78 +84,78 @@ contract NBGN is
     }
 
     /**
-     * @dev Mints NBGN tokens by depositing EURC
-     * @param _eurcAmount Amount of EURC to deposit
+     * @dev Mints NBGN tokens by depositing EURe
+     * @param _eureAmount Amount of EURe to deposit
      * @return nbgnAmount Amount of NBGN minted
      */
-    function mint(uint256 _eurcAmount) external nonReentrant whenNotPaused returns (uint256 nbgnAmount) {
-        if (_eurcAmount == 0) revert InvalidAmount();
+    function mint(uint256 _eureAmount) external nonReentrant whenNotPaused returns (uint256 nbgnAmount) {
+        if (_eureAmount == 0) revert InvalidAmount();
         
         // Calculate NBGN amount: 1 EUR = 1.95583 NBGN
-        // Convert EURC (6 decimals) to NBGN (18 decimals): multiply by 10^12
-        // Then apply conversion rate: 1 EURC = 1.95583 NBGN
-        nbgnAmount = (_eurcAmount * DECIMAL_DIFFERENCE * CONVERSION_RATE) / RATE_PRECISION;
+        // Both EURe and NBGN use 18 decimals, so no decimal conversion needed
+        // Apply conversion rate: 1 EURe = 1.95583 NBGN
+        nbgnAmount = (_eureAmount * DECIMAL_DIFFERENCE * CONVERSION_RATE) / RATE_PRECISION;
         
-        // Transfer EURC from user to contract
-        if (!eurcToken.transferFrom(msg.sender, address(this), _eurcAmount)) {
+        // Transfer EURe from user to contract
+        if (!eureToken.transferFrom(msg.sender, address(this), _eureAmount)) {
             revert TransferFailed();
         }
         
         // Update collateral tracking
-        totalCollateral += _eurcAmount;
+        totalCollateral += _eureAmount;
         
         // Mint NBGN tokens to user
         _mint(msg.sender, nbgnAmount);
         
-        emit Mint(msg.sender, _eurcAmount, nbgnAmount);
+        emit Mint(msg.sender, _eureAmount, nbgnAmount);
     }
 
     /**
-     * @dev Redeems NBGN tokens for EURC
+     * @dev Redeems NBGN tokens for EURe
      * @param _nbgnAmount Amount of NBGN to redeem
-     * @return eurcAmount Amount of EURC returned
+     * @return eureAmount Amount of EURe returned
      */
-    function redeem(uint256 _nbgnAmount) external nonReentrant whenNotPaused returns (uint256 eurcAmount) {
+    function redeem(uint256 _nbgnAmount) external nonReentrant whenNotPaused returns (uint256 eureAmount) {
         if (_nbgnAmount == 0) revert InvalidAmount();
         if (balanceOf(msg.sender) < _nbgnAmount) revert InvalidAmount();
         
-        // Calculate EURC amount: 1.95583 NBGN = 1 EUR
-        // Convert NBGN (18 decimals) to EURC (6 decimals): divide by 10^12
-        // Then apply conversion rate: 1.95583 NBGN = 1 EURC
-        eurcAmount = (_nbgnAmount * RATE_PRECISION) / (CONVERSION_RATE * DECIMAL_DIFFERENCE);
+        // Calculate EURe amount: 1.95583 NBGN = 1 EUR
+        // Both EURe and NBGN use 18 decimals, so no decimal conversion needed
+        // Apply conversion rate: 1.95583 NBGN = 1 EURe
+        eureAmount = (_nbgnAmount * RATE_PRECISION) / (CONVERSION_RATE * DECIMAL_DIFFERENCE);
         
         // Check collateral availability
-        if (totalCollateral < eurcAmount) revert InsufficientCollateral();
+        if (totalCollateral < eureAmount) revert InsufficientCollateral();
         
         // Burn NBGN tokens
         _burn(msg.sender, _nbgnAmount);
         
         // Update collateral tracking
-        totalCollateral -= eurcAmount;
+        totalCollateral -= eureAmount;
         
-        // Transfer EURC to user
-        if (!eurcToken.transfer(msg.sender, eurcAmount)) {
+        // Transfer EURe to user
+        if (!eureToken.transfer(msg.sender, eureAmount)) {
             revert TransferFailed();
         }
         
-        emit Redeem(msg.sender, _nbgnAmount, eurcAmount);
+        emit Redeem(msg.sender, _nbgnAmount, eureAmount);
     }
 
     /**
-     * @dev Calculates NBGN amount for given EURC amount
-     * @param _eurcAmount Amount of EURC (6 decimals)
+     * @dev Calculates NBGN amount for given EURe amount
+     * @param _eureAmount Amount of EURe (18 decimals)
      * @return NBGN amount (18 decimals)
      */
-    function calculateNBGN(uint256 _eurcAmount) external pure returns (uint256) {
-        return (_eurcAmount * DECIMAL_DIFFERENCE * CONVERSION_RATE) / RATE_PRECISION;
+    function calculateNBGN(uint256 _eureAmount) external pure returns (uint256) {
+        return (_eureAmount * DECIMAL_DIFFERENCE * CONVERSION_RATE) / RATE_PRECISION;
     }
 
     /**
-     * @dev Calculates EURC amount for given NBGN amount
+     * @dev Calculates EURe amount for given NBGN amount
      * @param _nbgnAmount Amount of NBGN (18 decimals)
-     * @return EURC amount (6 decimals)
+     * @return EURe amount (18 decimals)
      */
-    function calculateEURC(uint256 _nbgnAmount) external pure returns (uint256) {
+    function calculateEURe(uint256 _nbgnAmount) external pure returns (uint256) {
         return (_nbgnAmount * RATE_PRECISION) / (CONVERSION_RATE * DECIMAL_DIFFERENCE);
     }
 
@@ -201,7 +201,7 @@ contract NBGN is
      * @dev Get total collateral balance
      */
     function getCollateralBalance() external view returns (uint256) {
-        return eurcToken.balanceOf(address(this));
+        return eureToken.balanceOf(address(this));
     }
 
     /**
