@@ -1,219 +1,152 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.22;
+pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
- * @title NBGN - New Bulgarian Lev Stablecoin
- * @dev Euro-pegged stablecoin backed by EURe with fixed conversion rate
- * @notice 1 EUR = 1.95583 NBGN (Bulgarian Lev official rate)
+ * @title NBGN Token - Fully Decentralized
+ * @notice ERC-20 token pegged to Bulgarian Lev (BGN) at the official EUR:BGN rate
+ * @dev Non-upgradeable, no admin functions, purely algorithmic
  */
-contract NBGN is 
-    Initializable,
-    ERC20Upgradeable,
-    ERC20BurnableUpgradeable,
-    ERC20PausableUpgradeable,
-    OwnableUpgradeable,
-    UUPSUpgradeable,
-    ReentrancyGuardUpgradeable
-{
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
-    }
-
-    // Constants
-    uint256 private constant CONVERSION_RATE = 195583; // 1 EUR = 1.95583 NBGN (scaled by 100000)
-    uint256 private constant RATE_PRECISION = 100000;
-    uint256 private constant DECIMAL_DIFFERENCE = 1; // 18 - 18 = 0 decimal places difference (both tokens use 18 decimals)
+contract NBGNToken is ERC20, ReentrancyGuard {
+    using SafeERC20 for IERC20;
     
-    // EURe token address on Arbitrum One
-    address private constant EURE_ADDRESS = 0x0c06cCF38114ddfc35e07427B9424adcca9F44F8;
+    // Official EUR:BGN peg rate (1 EUR = 1.95583 BGN)
+    // Using 18 decimals precision: 1.95583 * 10^18
+    uint256 public constant BGN_PER_EUR = 1955830000000000000;
+    uint256 public constant PRECISION = 1e18;
     
     // State variables
-    IERC20Metadata public eureToken;
-    uint256 public totalCollateral;
+    IERC20 public immutable eureToken;
+    uint256 public totalEureReserves;
     
     // Events
-    event Mint(address indexed user, uint256 eureAmount, uint256 nbgnAmount);
-    event Redeem(address indexed user, uint256 nbgnAmount, uint256 eureAmount);
-    event CollateralDeposited(uint256 amount);
-    event CollateralWithdrawn(uint256 amount);
-    event EmergencyWithdraw(address indexed token, uint256 amount);
-
-    // Errors
-    error InvalidAmount();
-    error InsufficientCollateral();
-    error TransferFailed();
-    error ZeroAddress();
-    error InvalidCollateralToken();
-
+    event Minted(address indexed user, uint256 eureAmount, uint256 nbgnAmount);
+    event Redeemed(address indexed user, uint256 nbgnAmount, uint256 eureAmount);
+    event TokensBurned(address indexed user, uint256 amount);
+    
     /**
-     * @dev Initializes the contract
-     * @param _owner Address that will own the contract
+     * @notice Contract constructor
+     * @param _eureToken Address of the EURe token on Arbitrum
      */
-    function initialize(address _owner) public initializer {
-        if (_owner == address(0)) revert ZeroAddress();
-        
-        __ERC20_init("New Bulgarian Lev", "NBGN");
-        __ERC20Burnable_init();
-        __ERC20Pausable_init();
-        __Ownable_init(_owner);
-        __UUPSUpgradeable_init();
-        __ReentrancyGuard_init();
-        __Pausable_init();
-        
-        eureToken = IERC20Metadata(EURE_ADDRESS);
-        
-        // Verify EURe contract exists and has correct decimals (only on non-test networks)
-        if (block.chainid == 42161) { // Only check on Arbitrum One
-            try eureToken.decimals() returns (uint8 decimals) {
-                if (decimals != 18) revert InvalidCollateralToken(); // EURe uses 18 decimals
-            } catch {
-                revert InvalidCollateralToken();
-            }
-        }
+    constructor(address _eureToken) ERC20("NBGN Token", "NBGN") {
+        require(_eureToken != address(0), "Invalid EURe address");
+        eureToken = IERC20(_eureToken);
     }
-
+    
     /**
-     * @dev Mints NBGN tokens by depositing EURe
-     * @param _eureAmount Amount of EURe to deposit
-     * @return nbgnAmount Amount of NBGN minted
+     * @notice Mint NBGN tokens by depositing EURe
+     * @param eureAmount Amount of EURe to deposit
+     * @return nbgnAmount Amount of NBGN tokens minted
      */
-    function mint(uint256 _eureAmount) external nonReentrant whenNotPaused returns (uint256 nbgnAmount) {
-        if (_eureAmount == 0) revert InvalidAmount();
+    function mint(uint256 eureAmount) external nonReentrant returns (uint256 nbgnAmount) {
+        require(eureAmount > 0, "Amount must be positive");
         
-        // Calculate NBGN amount: 1 EUR = 1.95583 NBGN
-        // Both EURe and NBGN use 18 decimals, so no decimal conversion needed
-        // Apply conversion rate: 1 EURe = 1.95583 NBGN
-        nbgnAmount = (_eureAmount * DECIMAL_DIFFERENCE * CONVERSION_RATE) / RATE_PRECISION;
+        // Calculate NBGN amount: eureAmount * BGN_PER_EUR / PRECISION
+        nbgnAmount = (eureAmount * BGN_PER_EUR) / PRECISION;
+        require(nbgnAmount > 0, "Amount too small");
         
-        // Transfer EURe from user to contract
-        if (!eureToken.transferFrom(msg.sender, address(this), _eureAmount)) {
-            revert TransferFailed();
-        }
+        // Transfer EURe from user
+        eureToken.safeTransferFrom(msg.sender, address(this), eureAmount);
         
-        // Update collateral tracking
-        totalCollateral += _eureAmount;
+        // Update reserves
+        totalEureReserves += eureAmount;
         
-        // Mint NBGN tokens to user
+        // Mint NBGN tokens
         _mint(msg.sender, nbgnAmount);
         
-        emit Mint(msg.sender, _eureAmount, nbgnAmount);
+        emit Minted(msg.sender, eureAmount, nbgnAmount);
     }
-
+    
     /**
-     * @dev Redeems NBGN tokens for EURe
-     * @param _nbgnAmount Amount of NBGN to redeem
+     * @notice Redeem EURe by burning NBGN tokens
+     * @param nbgnAmount Amount of NBGN to burn
      * @return eureAmount Amount of EURe returned
      */
-    function redeem(uint256 _nbgnAmount) external nonReentrant whenNotPaused returns (uint256 eureAmount) {
-        if (_nbgnAmount == 0) revert InvalidAmount();
-        if (balanceOf(msg.sender) < _nbgnAmount) revert InvalidAmount();
+    function redeem(uint256 nbgnAmount) external nonReentrant returns (uint256 eureAmount) {
+        require(nbgnAmount > 0, "Amount must be positive");
+        require(balanceOf(msg.sender) >= nbgnAmount, "Insufficient NBGN balance");
         
-        // Calculate EURe amount: 1.95583 NBGN = 1 EUR
-        // Both EURe and NBGN use 18 decimals, so no decimal conversion needed
-        // Apply conversion rate: 1.95583 NBGN = 1 EURe
-        eureAmount = (_nbgnAmount * RATE_PRECISION) / (CONVERSION_RATE * DECIMAL_DIFFERENCE);
-        
-        // Check collateral availability
-        if (totalCollateral < eureAmount) revert InsufficientCollateral();
+        // Calculate EURe amount: nbgnAmount * PRECISION / BGN_PER_EUR
+        eureAmount = (nbgnAmount * PRECISION) / BGN_PER_EUR;
+        require(eureAmount > 0, "Amount too small");
+        require(totalEureReserves >= eureAmount, "Insufficient reserves");
         
         // Burn NBGN tokens
-        _burn(msg.sender, _nbgnAmount);
+        _burn(msg.sender, nbgnAmount);
         
-        // Update collateral tracking
-        totalCollateral -= eureAmount;
+        // Update reserves
+        totalEureReserves -= eureAmount;
         
         // Transfer EURe to user
-        if (!eureToken.transfer(msg.sender, eureAmount)) {
-            revert TransferFailed();
-        }
+        eureToken.safeTransfer(msg.sender, eureAmount);
         
-        emit Redeem(msg.sender, _nbgnAmount, eureAmount);
+        emit Redeemed(msg.sender, nbgnAmount, eureAmount);
     }
-
+    
     /**
-     * @dev Calculates NBGN amount for given EURe amount
-     * @param _eureAmount Amount of EURe (18 decimals)
-     * @return NBGN amount (18 decimals)
+     * @notice Burn your own NBGN tokens without receiving EURe back
+     * @dev This improves the reserve ratio for all remaining token holders
+     * @param amount Amount of tokens to burn
      */
-    function calculateNBGN(uint256 _eureAmount) external pure returns (uint256) {
-        return (_eureAmount * DECIMAL_DIFFERENCE * CONVERSION_RATE) / RATE_PRECISION;
-    }
-
-    /**
-     * @dev Calculates EURe amount for given NBGN amount
-     * @param _nbgnAmount Amount of NBGN (18 decimals)
-     * @return EURe amount (18 decimals)
-     */
-    function calculateEURe(uint256 _nbgnAmount) external pure returns (uint256) {
-        return (_nbgnAmount * RATE_PRECISION) / (CONVERSION_RATE * DECIMAL_DIFFERENCE);
-    }
-
-    /**
-     * @dev Returns the conversion rate (1 EUR = X NBGN)
-     */
-    function getConversionRate() external pure returns (uint256, uint256) {
-        return (CONVERSION_RATE, RATE_PRECISION);
-    }
-
-    /**
-     * @dev Pauses the contract - only owner
-     */
-    function pause() external onlyOwner {
-        _pause();
-    }
-
-    /**
-     * @dev Unpauses the contract - only owner
-     */
-    function unpause() external onlyOwner {
-        _unpause();
-    }
-
-    /**
-     * @dev Emergency withdrawal function - only owner
-     * @param _token Token address to withdraw
-     * @param _amount Amount to withdraw
-     */
-    function emergencyWithdraw(address _token, uint256 _amount) external onlyOwner {
-        if (_token == address(0)) revert ZeroAddress();
-        if (_amount == 0) revert InvalidAmount();
+    function burn(uint256 amount) external nonReentrant {
+        require(amount > 0, "Amount must be positive");
+        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
         
-        IERC20Metadata token = IERC20Metadata(_token);
-        if (!token.transfer(owner(), _amount)) {
-            revert TransferFailed();
-        }
+        // Burn NBGN tokens without returning EURe
+        // This leaves more EURe reserves for the remaining NBGN supply
+        _burn(msg.sender, amount);
         
-        emit EmergencyWithdraw(_token, _amount);
+        emit TokensBurned(msg.sender, amount);
     }
-
+    
     /**
-     * @dev Get total collateral balance
+     * @notice Calculate NBGN amount for given EURe amount
+     * @param eureAmount Amount of EURe
+     * @return nbgnAmount Equivalent NBGN amount
      */
-    function getCollateralBalance() external view returns (uint256) {
-        return eureToken.balanceOf(address(this));
+    function calculateNbgnAmount(uint256 eureAmount) external pure returns (uint256 nbgnAmount) {
+        nbgnAmount = (eureAmount * BGN_PER_EUR) / PRECISION;
     }
-
+    
     /**
-     * @dev Authorizes contract upgrades - only owner
+     * @notice Calculate EURe amount for given NBGN amount
+     * @param nbgnAmount Amount of NBGN
+     * @return eureAmount Equivalent EURe amount
      */
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
-
-    // Override required by Solidity
-    function _update(address from, address to, uint256 value)
-        internal
-        override(ERC20Upgradeable, ERC20PausableUpgradeable)
-    {
-        super._update(from, to, value);
+    function calculateEureAmount(uint256 nbgnAmount) external pure returns (uint256 eureAmount) {
+        eureAmount = (nbgnAmount * PRECISION) / BGN_PER_EUR;
+    }
+    
+    /**
+     * @notice Get current reserve ratio
+     * @return ratio Reserve ratio with 18 decimal precision (1e18 = 100%)
+     */
+    function getReserveRatio() external view returns (uint256 ratio) {
+        uint256 supply = totalSupply();
+        if (supply == 0) return PRECISION;
+        
+        // Calculate expected reserves for current supply
+        uint256 expectedReserves = (supply * PRECISION) / BGN_PER_EUR;
+        
+        // Calculate actual ratio
+        ratio = (totalEureReserves * PRECISION) / expectedReserves;
+    }
+    
+    /**
+     * @notice Check if contract is over-collateralized
+     * @return isOverCollateralized True if reserves exceed required amount
+     * @return excessReserves Amount of excess reserves in EURe
+     */
+    function checkOverCollateralization() external view returns (bool isOverCollateralized, uint256 excessReserves) {
+        uint256 supply = totalSupply();
+        uint256 requiredReserves = (supply * PRECISION) / BGN_PER_EUR;
+        
+        isOverCollateralized = totalEureReserves > requiredReserves;
+        excessReserves = isOverCollateralized ? totalEureReserves - requiredReserves : 0;
     }
 }

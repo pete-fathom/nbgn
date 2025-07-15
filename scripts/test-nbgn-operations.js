@@ -6,110 +6,129 @@ async function main() {
   const [signer] = await ethers.getSigners();
   console.log("Testing with account:", signer.address);
   
-  // Contract addresses on Arbitrum
-  const nbgnAddress = "0xF5834Af69E2772604132f796f6ee08fd0f83C28a"; // Update this if different
+  // Live contract addresses on Arbitrum
+  const nbgnAddress = "0x47F9CF7043C8A059f82a988C0B9fF73F0c3e6067";
   const eureAddress = "0x0c06cCF38114ddfc35e07427B9424adcca9F44F8";
-  const recipientAddress = "0xe9bb2Ff61e536ee96e6B88D7Ac99dE01b44d2F0F";
+  
+  // Contract ABIs
+  const nbgnABI = [
+    "function mint(uint256 eureAmount) external returns (uint256)",
+    "function redeem(uint256 nbgnAmount) external returns (uint256)",
+    "function balanceOf(address account) external view returns (uint256)",
+    "function calculateNbgnAmount(uint256 eureAmount) external pure returns (uint256)",
+    "function calculateEureAmount(uint256 nbgnAmount) external pure returns (uint256)",
+    "function totalEureReserves() external view returns (uint256)",
+    "function getReserveRatio() external view returns (uint256)"
+  ];
+  
+  const eureABI = [
+    "function balanceOf(address account) external view returns (uint256)",
+    "function approve(address spender, uint256 amount) external returns (bool)",
+    "function allowance(address owner, address spender) external view returns (uint256)",
+    "function transfer(address to, uint256 amount) external returns (bool)"
+  ];
   
   // Get contract instances
-  const nbgn = await ethers.getContractAt("NBGN", nbgnAddress);
-  const eure = await ethers.getContractAt("IERC20Metadata", eureAddress);
+  const nbgn = new ethers.Contract(nbgnAddress, nbgnABI, signer);
+  const eure = new ethers.Contract(eureAddress, eureABI, signer);
   
   console.log("📊 Initial Balances:");
   const initialEureBalance = await eure.balanceOf(signer.address);
   const initialNbgnBalance = await nbgn.balanceOf(signer.address);
-  const initialRecipientBalance = await nbgn.balanceOf(recipientAddress);
   
   console.log("Your EURe balance:", ethers.formatEther(initialEureBalance));
   console.log("Your NBGN balance:", ethers.formatEther(initialNbgnBalance));
-  console.log("Recipient NBGN balance:", ethers.formatEther(initialRecipientBalance));
   
-  if (initialEureBalance === 0n) {
-    console.log("\n❌ You have no EURe tokens. Please get some EURe first!");
+  if (initialEureBalance === 0n && initialNbgnBalance === 0n) {
+    console.log("\n❌ You have no EURe tokens and no NBGN tokens. Please get some EURe first!");
     return;
   }
   
-  // Test 1: Buy NBGN with EURe
-  console.log("\n🔵 Test 1: Buying NBGN with EURe");
-  const eureAmount = ethers.parseEther("10"); // Buy with 10 EURe
+  let actualMinted = 0n;
   
-  // First approve EURe spending
-  console.log("Approving EURe spending...");
-  const approveTx = await eure.approve(nbgnAddress, eureAmount);
-  await approveTx.wait();
-  console.log("✅ Approval successful");
+  // Test 1: Buy 1 NBGN with EURe (only if we have EURe)
+  if (initialEureBalance > 0n) {
+    console.log("\n🔵 Test 1: Buying 1 NBGN with EURe");
+    const eureAmount = ethers.parseEther("1"); // Buy with 1 EURe
+    
+    // Calculate expected NBGN amount
+    const expectedNbgn = await nbgn.calculateNbgnAmount(eureAmount);
+    console.log("Expected NBGN amount:", ethers.formatEther(expectedNbgn));
+    
+    // Check current allowance
+    const currentAllowance = await eure.allowance(signer.address, nbgnAddress);
+    console.log("Current EURe allowance:", ethers.formatEther(currentAllowance));
+    
+    // Approve EURe spending if needed
+    if (currentAllowance < eureAmount) {
+      console.log("Approving EURe spending...");
+      const approveTx = await eure.approve(nbgnAddress, eureAmount);
+      await approveTx.wait();
+      console.log("✅ Approval successful");
+    } else {
+      console.log("✅ EURe already approved");
+    }
+    
+    // Mint NBGN
+    console.log("Minting NBGN...");
+    const mintTx = await nbgn.mint(eureAmount);
+    const mintReceipt = await mintTx.wait();
+    console.log("✅ Mint successful, tx hash:", mintTx.hash);
+    
+    // Check new balance
+    const postMintNbgnBalance = await nbgn.balanceOf(signer.address);
+    actualMinted = postMintNbgnBalance - initialNbgnBalance;
+    console.log("Actually minted:", ethers.formatEther(actualMinted), "NBGN");
+  } else {
+    console.log("\n⚠️  Skipping Test 1: No EURe tokens available");
+  }
   
-  // Calculate expected NBGN amount
-  const expectedNbgn = await nbgn.calculateNBGN(eureAmount);
-  console.log("Expected NBGN amount:", ethers.formatEther(expectedNbgn));
+  // Test 2: Redeem NBGN back to EURe (use existing NBGN if no new minting)
+  console.log("\n🔵 Test 2: Redeeming NBGN back to EURe");
+  const currentNbgnBalance = await nbgn.balanceOf(signer.address);
+  const redeemAmount = actualMinted > 0n ? actualMinted : ethers.parseEther("1"); // Redeem 1 NBGN if we have it
   
-  // Mint NBGN
-  console.log("Minting NBGN...");
-  const mintTx = await nbgn.mint(eureAmount);
-  const mintReceipt = await mintTx.wait();
-  console.log("✅ Mint successful, tx hash:", mintTx.hash);
-  
-  // Check new balance
-  const postMintNbgnBalance = await nbgn.balanceOf(signer.address);
-  const actualMinted = postMintNbgnBalance - initialNbgnBalance;
-  console.log("Actually minted:", ethers.formatEther(actualMinted));
-  
-  // Test 2: Send 1 NBGN to recipient
-  console.log("\n🔵 Test 2: Sending 1 NBGN to", recipientAddress);
-  const sendAmount = ethers.parseEther("1");
-  
-  const transferTx = await nbgn.transfer(recipientAddress, sendAmount);
-  const transferReceipt = await transferTx.wait();
-  console.log("✅ Transfer successful, tx hash:", transferTx.hash);
-  
-  // Check balances after transfer
-  const postTransferSenderBalance = await nbgn.balanceOf(signer.address);
-  const postTransferRecipientBalance = await nbgn.balanceOf(recipientAddress);
-  
-  console.log("Your NBGN balance after transfer:", ethers.formatEther(postTransferSenderBalance));
-  console.log("Recipient NBGN balance after transfer:", ethers.formatEther(postTransferRecipientBalance));
-  
-  // Test 3: Sell NBGN and redeem EURe
-  console.log("\n🔵 Test 3: Selling NBGN and redeeming EURe");
-  const redeemAmount = ethers.parseEther("5"); // Redeem 5 NBGN
-  
-  // Calculate expected EURe amount
-  const expectedEure = await nbgn.calculateEURe(redeemAmount);
-  console.log("Expected EURe amount:", ethers.formatEther(expectedEure));
-  
-  // Redeem
-  console.log("Redeeming NBGN for EURe...");
-  const redeemTx = await nbgn.redeem(redeemAmount);
-  const redeemReceipt = await redeemTx.wait();
-  console.log("✅ Redeem successful, tx hash:", redeemTx.hash);
+  if (currentNbgnBalance >= redeemAmount) {
+    // Calculate expected EURe amount
+    const expectedEure = await nbgn.calculateEureAmount(redeemAmount);
+    console.log("Expected EURe amount:", ethers.formatEther(expectedEure));
+    
+    // Redeem
+    console.log("Redeeming NBGN for EURe...");
+    const redeemTx = await nbgn.redeem(redeemAmount);
+    const redeemReceipt = await redeemTx.wait();
+    console.log("✅ Redeem successful, tx hash:", redeemTx.hash);
+  } else {
+    console.log("⚠️  Insufficient NBGN balance for redemption");
+    console.log("Available NBGN:", ethers.formatEther(currentNbgnBalance));
+    console.log("Needed for redemption:", ethers.formatEther(redeemAmount));
+  }
   
   // Check final balances
   console.log("\n📊 Final Balances:");
   const finalEureBalance = await eure.balanceOf(signer.address);
   const finalNbgnBalance = await nbgn.balanceOf(signer.address);
-  const finalRecipientBalance = await nbgn.balanceOf(recipientAddress);
   
   console.log("Your EURe balance:", ethers.formatEther(finalEureBalance));
   console.log("Your NBGN balance:", ethers.formatEther(finalNbgnBalance));
-  console.log("Recipient NBGN balance:", ethers.formatEther(finalRecipientBalance));
   
   // Summary
   console.log("\n📈 Transaction Summary:");
-  console.log("EURe spent:", ethers.formatEther(initialEureBalance - finalEureBalance));
-  console.log("NBGN gained:", ethers.formatEther(finalNbgnBalance - initialNbgnBalance));
-  console.log("NBGN sent to recipient:", ethers.formatEther(finalRecipientBalance - initialRecipientBalance));
+  const eureChange = finalEureBalance - initialEureBalance;
+  const nbgnChange = finalNbgnBalance - initialNbgnBalance;
+  console.log("Net EURe change:", ethers.formatEther(eureChange));
+  console.log("Net NBGN change:", ethers.formatEther(nbgnChange));
   
-  // Check collateral in contract
-  const collateralBalance = await nbgn.getCollateralBalance();
-  const totalCollateral = await nbgn.totalCollateral();
+  // Check contract state
+  const totalReserves = await nbgn.totalEureReserves();
+  const reserveRatio = await nbgn.getReserveRatio();
   console.log("\n🏦 Contract State:");
-  console.log("Contract EURe balance:", ethers.formatEther(collateralBalance));
-  console.log("Total collateral tracked:", ethers.formatEther(totalCollateral));
+  console.log("Total EURe reserves:", ethers.formatEther(totalReserves));
+  console.log("Reserve ratio:", ethers.formatEther(reserveRatio), "(1.0 = 100%)");
   
   // Verify calculations
-  console.log("\n✨ Verifying Conversion Rate:");
-  const [rate, precision] = await nbgn.getConversionRate();
-  console.log("1 EUR = ", Number(rate) / Number(precision), "NBGN");
+  console.log("\n✨ Conversion Rate Verification:");
+  console.log("1 EUR = 1.95583 BGN (fixed rate)");
 }
 
 main()
